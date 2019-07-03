@@ -11,7 +11,7 @@ html {
   padding: 10px;
   border-width: 1px;
   margin: auto;
-  background: #ffffff;
+  background-color: #ffffff;
 }
 
 head {
@@ -19,7 +19,7 @@ head {
 }
 
 .outer {
-  background: #00ccff;
+  background-color: #00ccff;
   border-color: #666666;
   border-width: 2px;
   margin: 50px;
@@ -35,10 +35,10 @@ head {
 }
 
 .inner#bye {
-  background: #ffff00;
+  background-color: #ffff00;
 }
 
 span#name {
-  background: red;
+  background-color: #ff0000;
   color: white;
 }

@@ -3,6 +3,9 @@
 //! To support more CSS syntax, it would probably be easiest to replace this
 //! hand-rolled parser with one based on a library or parser generator.
 
+use std::fmt;
+use std::convert::TryInto;
+
 // Data structures:
 
 #[derive(Debug)]
@@ -23,7 +26,7 @@ pub enum Selector {
 
 #[derive(Debug)]
 pub struct SimpleSelector {
-    pub tag_name: Option<String>,
+    pub tag: Option<String>,
     pub id: Option<String>,
     pub class: Vec<String>,
 }
@@ -34,6 +37,105 @@ pub struct Declaration {
     pub value: Value,
 }
 
+// pub struct Position<T> {
+//     pub left: T,
+//     pub right: T,
+//     pub top: T,
+//     pub bottom: T,
+// }
+//
+// pub struct Properties {
+//     pub border_style: props::BorderStyle,
+//     pub border_width: Position<props::BorderWidth>,
+//     pub margin: Position<props::Margin>,
+// }
+//
+// pub mod props {
+//     use css::*;
+//
+//     pub trait Property: Debug {
+//         fn name() -> &'static str;
+//         fn initial() -> Self;
+//     }
+//
+//     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+//     pub enum Display {
+//         None,
+//         Block,
+//         Inline,
+//         InlineBlock,
+//     }
+//
+//     impl Default for Display {
+//         fn default() -> Self { Display::Inline }
+//     }
+//
+//     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+//     pub enum Position {
+//         Static,
+//         Relative,
+//         Absolute,
+//         // Sticky,
+//         Fixed,
+//     }
+//
+//     impl Default for Position {
+//         fn default() -> Self { Position::Static }
+//     }
+//
+//     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+//     pub enum BorderStyle {
+//         None,
+//         Hidden,
+//         Dotted,
+//         Dashed,
+//         Solid,
+//         Double,
+//         Groove,
+//         Ridge,
+//         Inset,
+//         Outset,
+//     }
+//
+//     impl Default for BorderStyle {
+//         fn default() -> Self { BorderStyle::None }
+//     }
+//
+//     #[derive(Debug, Clone, Copy, PartialEq)]
+//     pub enum BorderWidth {
+//         Thin,
+//         Medium,
+//         Thick,
+//         Absolute(Length)
+//     }
+//
+//     impl Default for BorderWidth {
+//         fn default() -> Self { BorderWidth::Medium }
+//     }
+//
+//     pub enum Margin {
+//         Auto,
+//         Absolute(Length),
+//     }
+//
+//     impl Default for Margin {
+//         fn default() -> Self { Margin::Absolute(Length::default()) }
+//     }
+// }
+//
+// #[derive(Debug, Clone, Copy, PartialEq)]
+// pub struct Length(f32, Unit);
+//
+// impl Default for Length {
+//     fn default() -> Self { Length(f32::default(), Unit::Px) }
+// }
+//
+// pub enum SpecifiedValue<V> {
+//     Initial,
+//     Inherit,
+//     Value(V),
+// }
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Keyword(String),
@@ -41,12 +143,16 @@ pub enum Value {
     ColorValue(Color),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Unit {
     Px,
+    // Em,
+    // Pt,
+    // Cm,
+    // Mm,
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Color {
     pub r: u8,
     pub g: u8,
@@ -54,7 +160,16 @@ pub struct Color {
     pub a: u8,
 }
 
-impl Copy for Color {}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Display {
+    Inline,
+    Block,
+    None,
+}
+
+impl Default for Display {
+    fn default() -> Self { Display::Inline }
+}
 
 pub type Specificity = (usize, usize, usize);
 
@@ -64,18 +179,125 @@ impl Selector {
         let Selector::Simple(ref simple) = *self;
         let a = simple.id.iter().count();
         let b = simple.class.len();
-        let c = simple.tag_name.iter().count();
+        let c = simple.tag.iter().count();
         (a, b, c)
     }
 }
 
-impl Value {
-    /// Return the size of a length in px, or zero for non-lengths.
-    pub fn to_px(&self) -> f32 {
-        match *self {
-            Value::Length(f, Unit::Px) => f,
-            _ => 0.0
+impl Color {
+    pub fn alpha(&self) -> f32 {
+        self.a as f32 / 255.0
+    }
+
+    pub fn channels(&self) -> (f32, f32, f32) {
+        let r = self.r as f32 / 255.0;
+        let g = self.g as f32 / 255.0;
+        let b = self.b as f32 / 255.0;
+        (r, g, b)
+    }
+
+    pub fn rgb(&self) -> (u8, u8, u8) {
+        let r = ((self.r as u16) * (self.a as u16) / 255) as u8;
+        let g = ((self.g as u16) * (self.a as u16) / 255) as u8;
+        let b = ((self.b as u16) * (self.a as u16) / 255) as u8;
+        (r, g, b)
+    }
+
+    pub fn over(&self, below: &Self) -> Color {
+        let (red_a, green_a, blue_a) = self.channels();
+        let (red_b, green_b, blue_b) = below.channels();
+
+        let alpha_a = self.alpha();
+        let alpha_b = below.alpha();
+        let alpha_c = alpha_a + alpha_b * (1.0 - alpha_a);
+
+        let compose = |channel_a, channel_b| {
+            (channel_a * alpha_a + channel_b * alpha_b * (1.0 - alpha_a)) / alpha_c
+        };
+        let scale = |channel| (255.0 * channel) as u8;
+
+        Color {
+            r: scale(compose(red_a, red_b)),
+            g: scale(compose(green_a, green_b)),
+            b: scale(compose(blue_a, blue_b)),
+            a: scale(alpha_c),
         }
+    }
+}
+
+impl TryInto<Color> for &Value {
+    type Error = String;
+
+    fn try_into(self) -> Result<Color, Self::Error> {
+        match self {
+            Value::ColorValue(v) => Ok(*v),
+            _ => Err(format!("expected color but found {}", self)),
+        }
+    }
+}
+
+impl TryInto<Option<f32>> for &Value {
+    type Error = String;
+
+    fn try_into(self) -> Result<Option<f32>, Self::Error> {
+        match self {
+            Value::Length(l, Unit::Px) => Ok(Option::Some(*l)),
+            Value::Keyword(ref kw) if kw == "auto" => Ok(Option::None),
+            _ => Err(format!("expected auto/length but found {}", self)),
+        }
+    }
+}
+
+impl TryInto<f32> for &Value {
+    type Error = String;
+
+    fn try_into(self) -> Result<f32, Self::Error> {
+        match self {
+            Value::Length(l, Unit::Px) => Ok(*l),
+            _ => Err(format!("expected auto/length but found {}", self)),
+        }
+    }
+}
+
+impl TryInto<Display> for &Value {
+    type Error = String;
+
+    fn try_into(self) -> Result<Display, Self::Error> {
+        match self {
+            Value::Keyword(kw) => {
+                match kw.as_str() {
+                    "inline" => Ok(Display::Inline),
+                    "block" => Ok(Display::Block),
+                    "none" => Ok(Display::None),
+                    _ => Err(format!("invalid layout mode \"{}\"", kw)),
+                }
+            }
+            _ => Err(format!("expected layout mode but found {}", self)),
+        }
+    }
+}
+
+impl fmt::Display for Value {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Value::Keyword(ref kw) => write!(f, "\"{}\"", kw),
+            Value::Length(l, u) => write!(f, "{}{}", l, u),
+            Value::ColorValue(c) => write!(f, "{}", c)
+        }
+    }
+}
+
+impl fmt::Display for Unit {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Unit::Px => write!(f, "px"),
+        }
+    }
+}
+
+impl fmt::Display for Color {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "rgba({}, {}, {}, {:.1})", self.r, self.g, self.b, self.alpha())
     }
 }
 
@@ -129,7 +351,7 @@ impl Parser {
 
     /// Parse one simple selector, e.g.: `type#id.class1.class2.class3`
     fn parse_simple_selector(&mut self) -> SimpleSelector {
-        let mut selector = SimpleSelector { tag_name: None, id: None, class: Vec::new() };
+        let mut selector = SimpleSelector { tag: None, id: None, class: Vec::new() };
         while !self.eof() {
             match self.next_char() {
                 '#' => {
@@ -145,7 +367,7 @@ impl Parser {
                     self.consume_char();
                 }
                 c if valid_identifier_char(c) => {
-                    selector.tag_name = Some(self.parse_identifier());
+                    selector.tag = Some(self.parse_identifier());
                 }
                 _ => break
             }
@@ -219,7 +441,8 @@ impl Parser {
             r: self.parse_hex_pair(),
             g: self.parse_hex_pair(),
             b: self.parse_hex_pair(),
-            a: 255 })
+            a: 255
+        })
     }
 
     /// Parse two hexadecimal digits.

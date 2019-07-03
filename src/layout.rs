@@ -1,21 +1,13 @@
 ///! Basic CSS block layout.
 
-use style::{StyledNode, Display};
-use css::Value::{Keyword, Length};
-use css::Unit::Px;
+use css::Display;
+use style::StyledNode;
+use paint::{DisplayList, DisplayCommand, Rect};
 use std::default::Default;
 
 pub use self::BoxType::{AnonymousBlock, InlineNode, BlockNode};
 
 // CSS box model. All sizes are in px.
-
-#[derive(Clone, Copy, Default, Debug)]
-pub struct Rect {
-    pub x: f32,
-    pub y: f32,
-    pub width: f32,
-    pub height: f32,
-}
 
 #[derive(Clone, Copy, Default, Debug)]
 pub struct Dimensions {
@@ -45,7 +37,7 @@ pub struct LayoutBox<'a> {
 pub enum BoxType<'a> {
     BlockNode(&'a StyledNode<'a>),
     InlineNode(&'a StyledNode<'a>),
-    AnonymousBlock,
+    AnonymousBlock, // FIXME: This should not be a separate type of box!
 }
 
 impl<'a> LayoutBox<'a> {
@@ -79,7 +71,7 @@ pub fn layout_tree<'a>(node: &'a StyledNode<'a>, mut containing_block: Dimension
 /// Build the tree of LayoutBoxes, but don't perform any layout calculations yet.
 fn build_layout_tree<'a>(style_node: &'a StyledNode<'a>) -> LayoutBox<'a> {
     // Create the root box.
-    let mut root = LayoutBox::new(match style_node.display() {
+    let mut root = LayoutBox::new(match style_node.specified.display {
         Display::Block => BlockNode(style_node),
         Display::Inline => InlineNode(style_node),
         Display::None => panic!("Root node has display: none.")
@@ -87,13 +79,20 @@ fn build_layout_tree<'a>(style_node: &'a StyledNode<'a>) -> LayoutBox<'a> {
 
     // Create the descendant boxes.
     for child in &style_node.children {
-        match child.display() {
+        match child.specified.display {
             Display::Block => root.children.push(build_layout_tree(child)),
             Display::Inline => root.get_inline_container().children.push(build_layout_tree(child)),
             Display::None => {} // Don't lay out nodes with `display: none;`
         }
     }
     root
+}
+
+/// Fold the layout tree into a display list to render.
+pub fn display_list<'a>(layout_root: &LayoutBox<'a>) -> DisplayList {
+    let mut list = Vec::new();
+    layout_root.render(&mut list);
+    list
 }
 
 impl<'a> LayoutBox<'a> {
@@ -130,32 +129,31 @@ impl<'a> LayoutBox<'a> {
     fn calculate_block_width(&mut self, containing_block: Dimensions) {
         let style = self.get_style_node();
 
-        // `width` has initial value `auto`.
-        let auto = Keyword("auto".to_string());
-        let mut width = style.value("width").unwrap_or(auto.clone());
+        let mut width = style.specified.width;
 
-        // margin, border, and padding have initial value 0.
-        let zero = Length(0.0, Px);
+        let mut margin_left = style.specified.margin_left;
+        let mut margin_right = style.specified.margin_right;
 
-        let mut margin_left = style.lookup("margin-left", "margin", &zero);
-        let mut margin_right = style.lookup("margin-right", "margin", &zero);
+        let border_left = style.specified.border_left;
+        let border_right = style.specified.border_right;
 
-        let border_left = style.lookup("border-left-width", "border-width", &zero);
-        let border_right = style.lookup("border-right-width", "border-width", &zero);
+        let padding_left = style.specified.padding_left;
+        let padding_right = style.specified.padding_right;
 
-        let padding_left = style.lookup("padding-left", "padding", &zero);
-        let padding_right = style.lookup("padding-right", "padding", &zero);
-
-        let total = sum([&margin_left, &margin_right, &border_left, &border_right,
-                         &padding_left, &padding_right, &width].iter().map(|v| v.to_px()));
+        let total: f32 = [
+            margin_left.unwrap_or_default(), margin_right.unwrap_or_default(),
+            border_left, border_right,
+            padding_left, padding_right,
+            width.unwrap_or_default(),
+        ].iter().sum();
 
         // If width is not auto and the total is wider than the container, treat auto margins as 0.
-        if width != auto && total > containing_block.content.width {
-            if margin_left == auto {
-                margin_left = Length(0.0, Px);
+        if width.is_some() && total > containing_block.content.width {
+            if margin_left.is_none() {
+                margin_left = Some(0.0);
             }
-            if margin_right == auto {
-                margin_right = Length(0.0, Px);
+            if margin_right.is_none() {
+                margin_right = Some(0.0);
             }
         }
 
@@ -164,49 +162,49 @@ impl<'a> LayoutBox<'a> {
         // and afterward all values should be absolute lengths in px.
         let underflow = containing_block.content.width - total;
 
-        match (width == auto, margin_left == auto, margin_right == auto) {
+        match (width.is_none(), margin_left.is_none(), margin_right.is_none()) {
             // If the values are overconstrained, calculate margin_right.
             (false, false, false) => {
-                margin_right = Length(margin_right.to_px() + underflow, Px);
+                margin_right = Some(margin_right.unwrap_or_default() + underflow);
             }
 
             // If exactly one size is auto, its used value follows from the equality.
-            (false, false, true) => { margin_right = Length(underflow, Px); }
-            (false, true, false) => { margin_left  = Length(underflow, Px); }
+            (false, false, true) => { margin_right = Some(underflow); }
+            (false, true, false) => { margin_left  = Some(underflow); }
 
             // If width is set to auto, any other auto values become 0.
             (true, _, _) => {
-                if margin_left == auto { margin_left = Length(0.0, Px); }
-                if margin_right == auto { margin_right = Length(0.0, Px); }
+                if margin_left.is_none() { margin_left = Some(0.0); }
+                if margin_right.is_none() { margin_right = Some(0.0); }
 
                 if underflow >= 0.0 {
                     // Expand width to fill the underflow.
-                    width = Length(underflow, Px);
+                    width = Some(underflow);
                 } else {
                     // Width can't be negative. Adjust the right margin instead.
-                    width = Length(0.0, Px);
-                    margin_right = Length(margin_right.to_px() + underflow, Px);
+                    width = Some(0.0);
+                    margin_right = Some(margin_right.unwrap_or_default() + underflow);
                 }
             }
 
             // If margin-left and margin-right are both auto, their used values are equal.
             (false, true, true) => {
-                margin_left = Length(underflow / 2.0, Px);
-                margin_right = Length(underflow / 2.0, Px);
+                margin_left = Some(underflow / 2.0);
+                margin_right = Some(underflow / 2.0);
             }
         }
 
         let d = &mut self.dimensions;
-        d.content.width = width.to_px();
+        d.content.width = width.unwrap_or_default();
 
-        d.padding.left = padding_left.to_px();
-        d.padding.right = padding_right.to_px();
+        d.padding.left = padding_left;
+        d.padding.right = padding_right;
 
-        d.border.left = border_left.to_px();
-        d.border.right = border_right.to_px();
+        d.border.left = border_left;
+        d.border.right = border_right;
 
-        d.margin.left = margin_left.to_px();
-        d.margin.right = margin_right.to_px();
+        d.margin.left = margin_left.unwrap_or_default();
+        d.margin.right = margin_right.unwrap_or_default();
     }
 
     /// Finish calculating the block's edge sizes, and position it within its containing block.
@@ -218,18 +216,15 @@ impl<'a> LayoutBox<'a> {
         let style = self.get_style_node();
         let d = &mut self.dimensions;
 
-        // margin, border, and padding have initial value 0.
-        let zero = Length(0.0, Px);
-
         // If margin-top or margin-bottom is `auto`, the used value is zero.
-        d.margin.top = style.lookup("margin-top", "margin", &zero).to_px();
-        d.margin.bottom = style.lookup("margin-bottom", "margin", &zero).to_px();
+        d.margin.top = style.specified.margin_top.unwrap_or_default();
+        d.margin.bottom = style.specified.margin_bottom.unwrap_or_default();
 
-        d.border.top = style.lookup("border-top-width", "border-width", &zero).to_px();
-        d.border.bottom = style.lookup("border-bottom-width", "border-width", &zero).to_px();
+        d.border.top = style.specified.border_top;
+        d.border.bottom = style.specified.border_bottom;
 
-        d.padding.top = style.lookup("padding-top", "padding", &zero).to_px();
-        d.padding.bottom = style.lookup("padding-bottom", "padding", &zero).to_px();
+        d.padding.top = style.specified.padding_top;
+        d.padding.bottom = style.specified.padding_bottom;
 
         d.content.x = containing_block.content.x +
                       d.margin.left + d.border.left + d.padding.left;
@@ -255,7 +250,7 @@ impl<'a> LayoutBox<'a> {
     fn calculate_block_height(&mut self) {
         // If the height is set to an explicit length, use that exact length.
         // Otherwise, just keep the value set by `layout_block_children`.
-        if let Some(Length(h, Px)) = self.get_style_node().value("height") {
+        if let Some(h) = self.get_style_node().specified.height {
             self.dimensions.content.height = h;
         }
     }
@@ -274,6 +269,66 @@ impl<'a> LayoutBox<'a> {
                 self.children.last_mut().unwrap()
             }
         }
+    }
+
+    fn render(&self, list: &mut DisplayList) {
+        self.render_background(list);
+        self.render_borders(list);
+        for child in &self.children {
+            child.render(list);
+        }
+    }
+
+    fn render_background(&self, list: &mut DisplayList) {
+        match self.box_type {
+            BlockNode(style) | InlineNode(style) => {
+                let color = style.specified.background_color;
+                list.push(DisplayCommand::SolidColor(color, self.dimensions.border_box()));
+            },
+            AnonymousBlock => {},
+        }
+    }
+
+    fn render_borders(&self, list: &mut DisplayList) {
+        let color = match self.box_type {
+            BlockNode(style) | InlineNode(style) => style.specified.border_color,
+            AnonymousBlock => return,
+        };
+
+        let d = &self.dimensions;
+        let border_box = d.border_box();
+
+        // Left border
+        list.push(DisplayCommand::SolidColor(color, Rect {
+            x: border_box.x,
+            y: border_box.y,
+            width: d.border.left,
+            height: border_box.height,
+        }));
+
+        // Right border
+        list.push(DisplayCommand::SolidColor(color, Rect {
+            x: border_box.x + border_box.width - d.border.right,
+            y: border_box.y,
+            width: d.border.right,
+            height: border_box.height,
+        }));
+
+        // Top border
+        list.push(DisplayCommand::SolidColor(color, Rect {
+            x: border_box.x,
+            y: border_box.y,
+            width: border_box.width,
+            height: d.border.top,
+        }));
+
+        // Bottom border
+        list.push(DisplayCommand::SolidColor(color, Rect {
+            x: border_box.x,
+            y: border_box.y + border_box.height - d.border.bottom,
+            width: border_box.width,
+            height: d.border.bottom,
+        }));
     }
 }
 
@@ -301,8 +356,4 @@ impl Dimensions {
     pub fn margin_box(self) -> Rect {
         self.border_box().expanded_by(self.margin)
     }
-}
-
-fn sum<I>(iter: I) -> f32 where I: Iterator<Item=f32> {
-    iter.fold(0., |a, b| a + b)
 }

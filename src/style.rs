@@ -4,48 +4,74 @@
 //! complicated if I add support for compound selectors.
 
 use dom::{Node, NodeType, ElementData};
-use css::{Stylesheet, Rule, Selector, SimpleSelector, Value, Specificity};
-use std::collections::HashMap;
-
-/// Map from CSS property names to values.
-pub type PropertyMap =  HashMap<String, Value>;
+use css::{Stylesheet, Rule, Selector, SimpleSelector, Color, Display, Specificity};
+use std::convert::TryInto;
 
 /// A node with associated style data.
 pub struct StyledNode<'a> {
     pub node: &'a Node,
-    pub specified_values: PropertyMap,
+    pub specified: Style,
     pub children: Vec<StyledNode<'a>>,
 }
 
-#[derive(PartialEq)]
-pub enum Display {
-    Inline,
-    Block,
-    None,
+/// Computed style values
+#[derive(Debug, Clone, PartialEq)]
+pub struct Style {
+    // layout mode
+    pub display: Display,
+
+    // box colors
+    pub background_color: Color,
+    pub border_color: Color,
+
+    // content dimensions (None ~ auto)
+    pub width: Option<f32>,
+    pub height: Option<f32>,
+
+    // margin lengths in pixels (None ~ auto)
+    pub margin_left: Option<f32>,
+    pub margin_right: Option<f32>,
+    pub margin_top: Option<f32>,
+    pub margin_bottom: Option<f32>,
+
+    // padding lengths in pixels
+    pub padding_left: f32,
+    pub padding_right: f32,
+    pub padding_top: f32,
+    pub padding_bottom: f32,
+
+    // border lengths in pixels
+    pub border_left: f32,
+    pub border_right: f32,
+    pub border_top: f32,
+    pub border_bottom: f32,
 }
 
-impl<'a> StyledNode<'a> {
-    /// Return the specified value of a property if it exists, otherwise `None`.
-    pub fn value(&self, name: &str) -> Option<Value> {
-        self.specified_values.get(name).cloned()
-    }
+impl Default for Style {
+    fn default() -> Self {
+        Style {
+            display: Display::default(),
 
-    /// Return the specified value of property `name`, or property `fallback_name` if that doesn't
-    /// exist, or value `default` if neither does.
-    pub fn lookup(&self, name: &str, fallback_name: &str, default: &Value) -> Value {
-        self.value(name).unwrap_or_else(|| self.value(fallback_name)
-                        .unwrap_or_else(|| default.clone()))
-    }
+            background_color: Color::default(),
+            border_color: Color::default(),
 
-    /// The value of the `display` property (defaults to inline).
-    pub fn display(&self) -> Display {
-        match self.value("display") {
-            Some(Value::Keyword(s)) => match &*s {
-                "block" => Display::Block,
-                "none" => Display::None,
-                _ => Display::Inline
-            },
-            _ => Display::Inline
+            width: Option::None,
+            height: Option::None,
+
+            margin_left: Option::Some(0.0),
+            margin_right: Option::Some(0.0),
+            margin_top: Option::Some(0.0),
+            margin_bottom: Option::Some(0.0),
+
+            padding_left: 0.0,
+            padding_right: 0.0,
+            padding_top: 0.0,
+            padding_bottom: 0.0,
+
+            border_left: 0.0,
+            border_right: 0.0,
+            border_top: 0.0,
+            border_bottom: 0.0,
         }
     }
 }
@@ -57,9 +83,9 @@ impl<'a> StyledNode<'a> {
 pub fn style_tree<'a>(root: &'a Node, stylesheet: &'a Stylesheet) -> StyledNode<'a> {
     StyledNode {
         node: root,
-        specified_values: match root.node_type {
+        specified: match root.node_type {
             NodeType::Element(ref elem) => specified_values(elem, stylesheet),
-            NodeType::Text(_) => HashMap::new()
+            NodeType::Text(_) => Style::default(),
         },
         children: root.children.iter().map(|child| style_tree(child, stylesheet)).collect(),
     }
@@ -68,18 +94,66 @@ pub fn style_tree<'a>(root: &'a Node, stylesheet: &'a Stylesheet) -> StyledNode<
 /// Apply styles to a single element, returning the specified styles.
 ///
 /// To do: Allow multiple UA/author/user stylesheets, and implement the cascade.
-fn specified_values(elem: &ElementData, stylesheet: &Stylesheet) -> PropertyMap {
-    let mut values = HashMap::new();
+fn specified_values(elem: &ElementData, stylesheet: &Stylesheet) -> Style {
+    let mut style = Style::default();
     let mut rules = matching_rules(elem, stylesheet);
 
     // Go through the rules from lowest to highest specificity.
     rules.sort_by(|&(a, _), &(b, _)| a.cmp(&b));
     for (_, rule) in rules {
         for declaration in &rule.declarations {
-            values.insert(declaration.name.clone(), declaration.value.clone());
+            let property = declaration.name.as_str();
+            let value = &declaration.value;
+            match property {
+                "display" => { style.display = value.try_into().expect(property); },
+
+                "width" => { style.width = value.try_into().expect(property); },
+                "height" => { style.height = value.try_into().expect(property); },
+
+                "background-color" => { style.background_color = value.try_into().expect(property); },
+                "border-color" => { style.border_color = value.try_into().expect(property); },
+
+                "margin-left" => { style.margin_left = value.try_into().expect(property); },
+                "margin-right" => { style.margin_right = value.try_into().expect(property); },
+                "margin-top" => { style.margin_top = value.try_into().expect(property); },
+                "margin-bottom" => { style.margin_bottom = value.try_into().expect(property); },
+                "margin" => {
+                    let specified = value.try_into().expect(property);
+                    style.margin_left = specified;
+                    style.margin_right = specified;
+                    style.margin_top = specified;
+                    style.margin_bottom = specified;
+                },
+
+                "padding-left" => { style.padding_left = value.try_into().expect(property); },
+                "padding-right" => { style.padding_right = value.try_into().expect(property); },
+                "padding-top" => { style.padding_top = value.try_into().expect(property); },
+                "padding-bottom" => { style.padding_bottom = value.try_into().expect(property); },
+                "padding" => {
+                    let specified = value.try_into().expect(property);
+                    style.padding_left = specified;
+                    style.padding_right = specified;
+                    style.padding_top = specified;
+                    style.padding_bottom = specified;
+                },
+
+                "border-left-width" => { style.border_left = value.try_into().expect(property); },
+                "border-right-width" => { style.border_right = value.try_into().expect(property); },
+                "border-top-width" => { style.border_top = value.try_into().expect(property); },
+                "border-bottom-width" => { style.border_bottom = value.try_into().expect(property); },
+                "border-width" => {
+                    let specified = value.try_into().expect(property);
+                    style.border_left = specified;
+                    style.border_right = specified;
+                    style.border_top = specified;
+                    style.border_bottom = specified;
+                },
+
+                _ => { /* XXX: Ignore any unsupported styling property! */ }
+            }
         }
     }
-    values
+    style
 }
 
 /// A single CSS rule and the specificity of its most specific matching selector.
@@ -109,7 +183,7 @@ fn matches(elem: &ElementData, selector: &Selector) -> bool {
 
 fn matches_simple_selector(elem: &ElementData, selector: &SimpleSelector) -> bool {
     // Check type selector
-    if selector.tag_name.iter().any(|name| elem.tag_name != *name) {
+    if selector.tag.iter().any(|name| elem.tag != *name) {
         return false
     }
 

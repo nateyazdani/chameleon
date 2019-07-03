@@ -21,7 +21,7 @@ pub enum NodeType {
 
 #[derive(Debug)]
 pub struct ElementData {
-    pub tag_name: String,
+    pub tag: String,
     pub attributes: AttrMap,
 }
 
@@ -35,7 +35,7 @@ pub fn elem(name: String, attrs: AttrMap, children: Vec<Node>) -> Node {
     Node {
         children: children,
         node_type: NodeType::Element(ElementData {
-            tag_name: name,
+            tag: name,
             attributes: attrs,
         })
     }

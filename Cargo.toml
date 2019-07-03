@@ -1,10 +1,10 @@
 [package]
-name = "robinson"
+name = "chameleon"
 version = "0.0.1"
-authors = ["Matt Brubeck <mbrubeck@limpet.net>"]
+authors = ["Nate Yazdani <nyazdani@cs.washington.edu>", "Matt Brubeck <mbrubeck@limpet.net>"]
 
 [[bin]]
-name = "robinson"
+name = "chameleon"
 path = "src/main.rs"
 
 [dependencies]
