@@ -48,7 +48,23 @@ impl<V: Default + Copy> Automatic<V> {
     /// Get the given value or the default for its type.
     pub fn value(&self) -> V {
         match self {
-            Automatic::Auto => Default::default(),
+            Automatic::Auto => V::default(),
+            Automatic::Given(v) => *v,
+        }
+    }
+
+    /// Give a value to use if the wrapper is automatic.
+    pub fn give(&self, v: V) -> Self {
+        match self {
+            Automatic::Auto => Automatic::Given(v),
+            Automatic::Given(_) => *self,
+        }
+    }
+
+    /// Take the value from the wrapper, using the provided value if automatic.
+    pub fn take(&self, v: V) -> V {
+        match self {
+            Automatic::Auto => v,
             Automatic::Given(v) => *v,
         }
     }
@@ -73,7 +89,7 @@ impl<V: Default + Copy> Automatic<V> {
 impl TryFrom<&Value> for Color {
     type Error = String;
 
-    fn try_from(v: &Value) -> Result<Color, Self::Error> {
+    fn try_from(v: &Value) -> Result<Self, Self::Error> {
         match v {
             Value::ColorValue(v) => Ok(*v),
             _ => Err(format!("expected color but found {}", v)),
@@ -84,7 +100,7 @@ impl TryFrom<&Value> for Color {
 impl TryFrom<&Value> for Automatic<Pixels> {
     type Error = String;
 
-    fn try_from(v: &Value) -> Result<Automatic<Pixels>, Self::Error> {
+    fn try_from(v: &Value) -> Result<Self, Self::Error> {
         match v {
             Value::Length(px, Unit::Px) => Ok(Automatic::Given(*px)),
             Value::Keyword(kw) if kw == "auto" => Ok(Automatic::Auto),
@@ -96,7 +112,7 @@ impl TryFrom<&Value> for Automatic<Pixels> {
 impl TryFrom<&Value> for Pixels {
     type Error = String;
 
-    fn try_from(v: &Value) -> Result<Pixels, Self::Error> {
+    fn try_from(v: &Value) -> Result<Self, Self::Error> {
         match v {
             Value::Length(l, Unit::Px) => Ok(*l),
             _ => Err(format!("expected auto/length but found {}", v)),
@@ -107,7 +123,7 @@ impl TryFrom<&Value> for Pixels {
 impl TryFrom<&Value> for Display {
     type Error = String;
 
-    fn try_from(v: &Value) -> Result<Display, Self::Error> {
+    fn try_from(v: &Value) -> Result<Self, Self::Error> {
         match v {
             Value::Keyword(kw) => {
                 match kw.as_str() {
@@ -167,9 +183,9 @@ impl Default for Style {
                 bottom: Automatic::Given(0.0),
             },
 
-            padding: Default::default(),
+            padding: Edge::default(),
 
-            border: Default::default(),
+            border: Edge::default(),
         }
     }
 }

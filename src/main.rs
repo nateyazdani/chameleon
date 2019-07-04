@@ -1,7 +1,6 @@
 extern crate getopts;
 extern crate image;
 
-use std::default::Default;
 use std::io::BufWriter;
 use std::fs::{self, File};
 
@@ -33,16 +32,15 @@ fn main() {
     let html = fs::read_to_string(str_arg("d", "examples/test.html")).unwrap();
     let css  = fs::read_to_string(str_arg("s", "examples/test.css")).unwrap();
 
-    // Adjust viewport size:
-    let mut viewport: layout::Dimensions = Default::default();
-    viewport.content.width  = num_arg("w", 800) as f32;
-    viewport.content.height = num_arg("h", 600) as f32;
+    // Configure viewport size:
+    let width  = num_arg("w", 800);
+    let height = num_arg("h", 600);
 
     // Parsing and rendering:
     let root_node = html::parse(html);
     let stylesheet = css::parse(css);
     let style_root = style::style_tree(&root_node, &stylesheet);
-    let layout_root = layout::layout_tree(&style_root, viewport);
+    let layout_root = layout::layout_tree(&style_root, width, height);
     let display_list = layout::display_list(&layout_root);
 
     // Create the output file:
@@ -50,7 +48,7 @@ fn main() {
     let mut file = BufWriter::new(File::create(&filename).unwrap());
 
     // Write to the file:
-    let canvas = paint::paint_display_list(&display_list, viewport.content);
+    let canvas = paint::paint_display_list(&display_list, width, height);
     let (w, h) = (canvas.width as u32, canvas.height as u32);
     let img = image::ImageBuffer::from_fn(w, h, move |x, y| {
         let color = canvas.pixels[(y * w + x) as usize];
