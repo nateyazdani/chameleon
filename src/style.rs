@@ -4,8 +4,8 @@
 //! complicated if I add support for compound selectors.
 
 use dom::{Node, NodeType, ElementData};
-use css::{Stylesheet, Rule, Selector, SimpleSelector, Color, Display, Specificity};
-use std::convert::TryInto;
+use css::{Stylesheet, Rule, Selector, SimpleSelector, Value, Unit, Color, Specificity};
+use std::convert::{TryFrom, TryInto};
 
 /// A node with associated style data.
 pub struct StyledNode<'a> {
@@ -14,8 +14,116 @@ pub struct StyledNode<'a> {
     pub children: Vec<StyledNode<'a>>,
 }
 
+/// Bundled edge offsets.
+#[derive(Clone, Copy, Default, PartialEq, Debug)]
+pub struct Edge<T> {
+    pub left: T,
+    pub right: T,
+    pub top: T,
+    pub bottom: T,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Display {
+    Inline,
+    Block,
+    None,
+}
+
+impl Default for Display {
+    fn default() -> Self { Display::Inline }
+}
+
+/// A length measured in standard pixels.
+pub type Pixels = f32;
+
+/// A potentially automatically calculated length.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Automatic<V> {
+    Auto,
+    Given(V),
+}
+
+impl<V: Default + Copy> Automatic<V> {
+    /// Get the given value or the default for its type.
+    pub fn value(&self) -> V {
+        match self {
+            Automatic::Auto => Default::default(),
+            Automatic::Given(v) => *v,
+        }
+    }
+
+    /// Is the wrapper set to automatic?
+    pub fn is_auto(&self) -> bool {
+        match self {
+            Automatic::Auto => true,
+            Automatic::Given(_) => false
+        }
+    }
+
+    /// Is the wrapper set to a given value?
+    pub fn is_given(&self) -> bool {
+        match self {
+            Automatic::Auto => false,
+            Automatic::Given(_) => true
+        }
+    }
+}
+
+impl TryFrom<&Value> for Color {
+    type Error = String;
+
+    fn try_from(v: &Value) -> Result<Color, Self::Error> {
+        match v {
+            Value::ColorValue(v) => Ok(*v),
+            _ => Err(format!("expected color but found {}", v)),
+        }
+    }
+}
+
+impl TryFrom<&Value> for Automatic<Pixels> {
+    type Error = String;
+
+    fn try_from(v: &Value) -> Result<Automatic<Pixels>, Self::Error> {
+        match v {
+            Value::Length(px, Unit::Px) => Ok(Automatic::Given(*px)),
+            Value::Keyword(kw) if kw == "auto" => Ok(Automatic::Auto),
+            _ => Err(format!("expected auto/length but found {}", v)),
+        }
+    }
+}
+
+impl TryFrom<&Value> for Pixels {
+    type Error = String;
+
+    fn try_from(v: &Value) -> Result<Pixels, Self::Error> {
+        match v {
+            Value::Length(l, Unit::Px) => Ok(*l),
+            _ => Err(format!("expected auto/length but found {}", v)),
+        }
+    }
+}
+
+impl TryFrom<&Value> for Display {
+    type Error = String;
+
+    fn try_from(v: &Value) -> Result<Display, Self::Error> {
+        match v {
+            Value::Keyword(kw) => {
+                match kw.as_str() {
+                    "inline" => Ok(Display::Inline),
+                    "block" => Ok(Display::Block),
+                    "none" => Ok(Display::None),
+                    _ => Err(format!("invalid display mode \"{}\"", kw)),
+                }
+            }
+            _ => Err(format!("expected display mode but found {}", v)),
+        }
+    }
+}
+
 /// Computed style values
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq, Debug)]
 pub struct Style {
     // layout mode
     pub display: Display,
@@ -25,26 +133,20 @@ pub struct Style {
     pub border_color: Color,
 
     // content dimensions (None ~ auto)
-    pub width: Option<f32>,
-    pub height: Option<f32>,
+    pub width: Automatic<Pixels>,
+    pub height: Automatic<Pixels>,
 
-    // margin lengths in pixels (None ~ auto)
-    pub margin_left: Option<f32>,
-    pub margin_right: Option<f32>,
-    pub margin_top: Option<f32>,
-    pub margin_bottom: Option<f32>,
+    // content edge in pixels (None ~ auto)
+    //pub content: Edge<Automatic<f32>>,
 
-    // padding lengths in pixels
-    pub padding_left: f32,
-    pub padding_right: f32,
-    pub padding_top: f32,
-    pub padding_bottom: f32,
+    // margin edge in pixels (None ~ auto)
+    pub margin: Edge<Automatic<Pixels>>,
 
-    // border lengths in pixels
-    pub border_left: f32,
-    pub border_right: f32,
-    pub border_top: f32,
-    pub border_bottom: f32,
+    // padding edge in pixels
+    pub padding: Edge<Pixels>,
+
+    // border edge in pixels
+    pub border: Edge<Pixels>,
 }
 
 impl Default for Style {
@@ -55,23 +157,19 @@ impl Default for Style {
             background_color: Color::default(),
             border_color: Color::default(),
 
-            width: Option::None,
-            height: Option::None,
+            width: Automatic::Auto,
+            height: Automatic::Auto,
 
-            margin_left: Option::Some(0.0),
-            margin_right: Option::Some(0.0),
-            margin_top: Option::Some(0.0),
-            margin_bottom: Option::Some(0.0),
+            margin: Edge {
+                left: Automatic::Given(0.0),
+                right: Automatic::Given(0.0),
+                top: Automatic::Given(0.0),
+                bottom: Automatic::Given(0.0),
+            },
 
-            padding_left: 0.0,
-            padding_right: 0.0,
-            padding_top: 0.0,
-            padding_bottom: 0.0,
+            padding: Default::default(),
 
-            border_left: 0.0,
-            border_right: 0.0,
-            border_top: 0.0,
-            border_bottom: 0.0,
+            border: Default::default(),
         }
     }
 }
@@ -113,40 +211,40 @@ fn specified_values(elem: &ElementData, stylesheet: &Stylesheet) -> Style {
                 "background-color" => { style.background_color = value.try_into().expect(property); },
                 "border-color" => { style.border_color = value.try_into().expect(property); },
 
-                "margin-left" => { style.margin_left = value.try_into().expect(property); },
-                "margin-right" => { style.margin_right = value.try_into().expect(property); },
-                "margin-top" => { style.margin_top = value.try_into().expect(property); },
-                "margin-bottom" => { style.margin_bottom = value.try_into().expect(property); },
+                "margin-left" => { style.margin.left = value.try_into().expect(property); },
+                "margin-right" => { style.margin.right = value.try_into().expect(property); },
+                "margin-top" => { style.margin.top = value.try_into().expect(property); },
+                "margin-bottom" => { style.margin.bottom = value.try_into().expect(property); },
                 "margin" => {
                     let specified = value.try_into().expect(property);
-                    style.margin_left = specified;
-                    style.margin_right = specified;
-                    style.margin_top = specified;
-                    style.margin_bottom = specified;
+                    style.margin.left = specified;
+                    style.margin.right = specified;
+                    style.margin.top = specified;
+                    style.margin.bottom = specified;
                 },
 
-                "padding-left" => { style.padding_left = value.try_into().expect(property); },
-                "padding-right" => { style.padding_right = value.try_into().expect(property); },
-                "padding-top" => { style.padding_top = value.try_into().expect(property); },
-                "padding-bottom" => { style.padding_bottom = value.try_into().expect(property); },
+                "padding-left" => { style.padding.left = value.try_into().expect(property); },
+                "padding-right" => { style.padding.right = value.try_into().expect(property); },
+                "padding-top" => { style.padding.top = value.try_into().expect(property); },
+                "padding-bottom" => { style.padding.bottom = value.try_into().expect(property); },
                 "padding" => {
                     let specified = value.try_into().expect(property);
-                    style.padding_left = specified;
-                    style.padding_right = specified;
-                    style.padding_top = specified;
-                    style.padding_bottom = specified;
+                    style.padding.left = specified;
+                    style.padding.right = specified;
+                    style.padding.top = specified;
+                    style.padding.bottom = specified;
                 },
 
-                "border-left-width" => { style.border_left = value.try_into().expect(property); },
-                "border-right-width" => { style.border_right = value.try_into().expect(property); },
-                "border-top-width" => { style.border_top = value.try_into().expect(property); },
-                "border-bottom-width" => { style.border_bottom = value.try_into().expect(property); },
+                "border-left-width" => { style.border.left = value.try_into().expect(property); },
+                "border-right-width" => { style.border.right = value.try_into().expect(property); },
+                "border-top-width" => { style.border.top = value.try_into().expect(property); },
+                "border-bottom-width" => { style.border.bottom = value.try_into().expect(property); },
                 "border-width" => {
                     let specified = value.try_into().expect(property);
-                    style.border_left = specified;
-                    style.border_right = specified;
-                    style.border_top = specified;
-                    style.border_bottom = specified;
+                    style.border.left = specified;
+                    style.border.right = specified;
+                    style.border.top = specified;
+                    style.border.bottom = specified;
                 },
 
                 _ => { /* XXX: Ignore any unsupported styling property! */ }

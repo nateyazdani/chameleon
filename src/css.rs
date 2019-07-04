@@ -4,7 +4,6 @@
 //! hand-rolled parser with one based on a library or parser generator.
 
 use std::fmt;
-use std::convert::TryInto;
 
 // Data structures:
 
@@ -160,17 +159,6 @@ pub struct Color {
     pub a: u8,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Display {
-    Inline,
-    Block,
-    None,
-}
-
-impl Default for Display {
-    fn default() -> Self { Display::Inline }
-}
-
 pub type Specificity = (usize, usize, usize);
 
 impl Selector {
@@ -221,58 +209,6 @@ impl Color {
             g: scale(compose(green_a, green_b)),
             b: scale(compose(blue_a, blue_b)),
             a: scale(alpha_c),
-        }
-    }
-}
-
-impl TryInto<Color> for &Value {
-    type Error = String;
-
-    fn try_into(self) -> Result<Color, Self::Error> {
-        match self {
-            Value::ColorValue(v) => Ok(*v),
-            _ => Err(format!("expected color but found {}", self)),
-        }
-    }
-}
-
-impl TryInto<Option<f32>> for &Value {
-    type Error = String;
-
-    fn try_into(self) -> Result<Option<f32>, Self::Error> {
-        match self {
-            Value::Length(l, Unit::Px) => Ok(Option::Some(*l)),
-            Value::Keyword(ref kw) if kw == "auto" => Ok(Option::None),
-            _ => Err(format!("expected auto/length but found {}", self)),
-        }
-    }
-}
-
-impl TryInto<f32> for &Value {
-    type Error = String;
-
-    fn try_into(self) -> Result<f32, Self::Error> {
-        match self {
-            Value::Length(l, Unit::Px) => Ok(*l),
-            _ => Err(format!("expected auto/length but found {}", self)),
-        }
-    }
-}
-
-impl TryInto<Display> for &Value {
-    type Error = String;
-
-    fn try_into(self) -> Result<Display, Self::Error> {
-        match self {
-            Value::Keyword(kw) => {
-                match kw.as_str() {
-                    "inline" => Ok(Display::Inline),
-                    "block" => Ok(Display::Block),
-                    "none" => Ok(Display::None),
-                    _ => Err(format!("invalid layout mode \"{}\"", kw)),
-                }
-            }
-            _ => Err(format!("expected layout mode but found {}", self)),
         }
     }
 }

@@ -6,7 +6,6 @@
 //!
 //! * Comments
 //! * Doctypes and processing instructions
-//! * Self-closing tags
 //! * Non-well-formed markup
 //! * Character entities
 
@@ -56,8 +55,14 @@ impl Parser {
     fn parse_element(&mut self) -> dom::Node {
         // Opening tag.
         assert_eq!(self.consume_char(), '<');
-        let tag = self.parse_tag_name();
+        let tag = self.parse_identifier();
         let attrs = self.parse_attributes();
+        if self.next_char() == '/' {
+            // Self-closing tag.
+            assert_eq!(self.consume_char(), '/');
+            assert_eq!(self.consume_char(), '>');
+            return dom::elem(tag, attrs, vec![]);
+        }
         assert_eq!(self.consume_char(), '>');
 
         // Contents.
@@ -66,14 +71,14 @@ impl Parser {
         // Closing tag.
         assert_eq!(self.consume_char(), '<');
         assert_eq!(self.consume_char(), '/');
-        assert_eq!(self.parse_tag_name(), tag);
+        assert_eq!(self.parse_identifier(), tag);
         assert_eq!(self.consume_char(), '>');
 
         dom::elem(tag, attrs, children)
     }
 
     /// Parse a tag or attribute name.
-    fn parse_tag_name(&mut self) -> String {
+    fn parse_identifier(&mut self) -> String {
         self.consume_while(|c| match c {
             'a'...'z' | 'A'...'Z' | '0'...'9' => true,
             _ => false
@@ -85,25 +90,25 @@ impl Parser {
         let mut attributes = HashMap::new();
         loop {
             self.consume_whitespace();
-            if self.next_char() == '>' {
+            if !self.next_char().is_alphanumeric() {
                 break;
             }
-            let (name, value) = self.parse_attr();
+            let (name, value) = self.parse_attribute();
             attributes.insert(name, value);
         }
         attributes
     }
 
     /// Parse a single name="value" pair.
-    fn parse_attr(&mut self) -> (String, String) {
-        let name = self.parse_tag_name();
+    fn parse_attribute(&mut self) -> (String, String) {
+        let name = self.parse_identifier();
         assert_eq!(self.consume_char(), '=');
-        let value = self.parse_attr_value();
+        let value = self.parse_quotation();
         (name, value)
     }
 
     /// Parse a quoted value.
-    fn parse_attr_value(&mut self) -> String {
+    fn parse_quotation(&mut self) -> String {
         let open_quote = self.consume_char();
         assert!(open_quote == '"' || open_quote == '\'');
         let value = self.consume_while(|c| c != open_quote);

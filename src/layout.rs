@@ -1,11 +1,8 @@
 ///! Basic CSS block layout.
 
-use css::Display;
-use style::StyledNode;
+use style::{StyledNode, Style, Display, Edge, Automatic, Pixels};
 use paint::{DisplayList, DisplayCommand, Rect};
 use std::default::Default;
-
-pub use self::BoxType::{AnonymousBlock, InlineNode, BlockNode};
 
 // CSS box model. All sizes are in px.
 
@@ -14,46 +11,58 @@ pub struct Dimensions {
     /// Position of the content area relative to the document origin:
     pub content: Rect,
     // Surrounding edges:
-    pub padding: EdgeSizes,
-    pub border: EdgeSizes,
-    pub margin: EdgeSizes,
+    pub padding: Edge<Pixels>,
+    pub border: Edge<Pixels>,
+    pub margin: Edge<Pixels>,
 }
 
-#[derive(Clone, Copy, Default, Debug)]
-pub struct EdgeSizes {
-    pub left: f32,
-    pub right: f32,
-    pub top: f32,
-    pub bottom: f32,
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum BoxType {
+    Block, // display: block
+    Inline, // display: inline
 }
 
 /// A node in the layout tree.
 pub struct LayoutBox<'a> {
     pub dimensions: Dimensions,
-    pub box_type: BoxType<'a>,
+    pub anonymous: bool,
+    pub style: &'a Style,
+    pub box_type: BoxType,
     pub children: Vec<LayoutBox<'a>>,
 }
 
-pub enum BoxType<'a> {
-    BlockNode(&'a StyledNode<'a>),
-    InlineNode(&'a StyledNode<'a>),
-    AnonymousBlock, // FIXME: This should not be a separate type of box!
-}
-
 impl<'a> LayoutBox<'a> {
-    fn new(box_type: BoxType) -> LayoutBox {
+    fn new(box_type: BoxType, style: &'a Style) -> Self {
         LayoutBox {
             box_type: box_type,
+            style: style,
+            anonymous: true,
             dimensions: Default::default(),
             children: Vec::new(),
         }
     }
 
-    fn get_style_node(&self) -> &'a StyledNode<'a> {
-        match self.box_type {
-            BlockNode(node) | InlineNode(node) => node,
-            AnonymousBlock => panic!("Anonymous block box has no style node")
+    fn of_style_node(style_node: &'a StyledNode<'a>) -> Self {
+        LayoutBox {
+            box_type: match style_node.specified.display {
+                Display::Block => BoxType::Block,
+                Display::Inline => BoxType::Inline,
+                Display::None => panic!("A hidden style node gets no layout box."),
+            },
+            style: &style_node.specified,
+            anonymous: false,
+            dimensions: Default::default(),
+            children: Vec::new(),
         }
+    }
+
+    fn is_anonymous_block(&self) -> bool {
+        self.box_type == BoxType::Block && self.anonymous
+    }
+
+    #[allow(dead_code)]
+    fn is_anonymous_inline(&self) -> bool {
+        self.box_type == BoxType::Inline && self.anonymous
     }
 }
 
@@ -71,11 +80,7 @@ pub fn layout_tree<'a>(node: &'a StyledNode<'a>, mut containing_block: Dimension
 /// Build the tree of LayoutBoxes, but don't perform any layout calculations yet.
 fn build_layout_tree<'a>(style_node: &'a StyledNode<'a>) -> LayoutBox<'a> {
     // Create the root box.
-    let mut root = LayoutBox::new(match style_node.specified.display {
-        Display::Block => BlockNode(style_node),
-        Display::Inline => InlineNode(style_node),
-        Display::None => panic!("Root node has display: none.")
-    });
+    let mut root = LayoutBox::of_style_node(style_node);
 
     // Create the descendant boxes.
     for child in &style_node.children {
@@ -99,8 +104,8 @@ impl<'a> LayoutBox<'a> {
     /// Lay out a box and its descendants.
     fn layout(&mut self, containing_block: Dimensions) {
         match self.box_type {
-            BlockNode(_) => self.layout_block(containing_block),
-            InlineNode(_) | AnonymousBlock => {} // TODO
+            BoxType::Block => self.layout_block(containing_block),
+            BoxType::Inline => {} // TODO
         }
     }
 
@@ -127,33 +132,25 @@ impl<'a> LayoutBox<'a> {
     ///
     /// Sets the horizontal margin/padding/border dimensions, and the `width`.
     fn calculate_block_width(&mut self, containing_block: Dimensions) {
-        let style = self.get_style_node();
+        let mut width = self.style.width;
 
-        let mut width = style.specified.width;
-
-        let mut margin_left = style.specified.margin_left;
-        let mut margin_right = style.specified.margin_right;
-
-        let border_left = style.specified.border_left;
-        let border_right = style.specified.border_right;
-
-        let padding_left = style.specified.padding_left;
-        let padding_right = style.specified.padding_right;
+        let mut margin_left = self.style.margin.left;
+        let mut margin_right = self.style.margin.right;
 
         let total: f32 = [
-            margin_left.unwrap_or_default(), margin_right.unwrap_or_default(),
-            border_left, border_right,
-            padding_left, padding_right,
-            width.unwrap_or_default(),
+            margin_left.value(), margin_right.value(),
+            self.style.border.left, self.style.border.right,
+            self.style.padding.left, self.style.padding.right,
+            width.value(),
         ].iter().sum();
 
         // If width is not auto and the total is wider than the container, treat auto margins as 0.
-        if width.is_some() && total > containing_block.content.width {
-            if margin_left.is_none() {
-                margin_left = Some(0.0);
+        if width.is_given() && total > containing_block.content.width {
+            if margin_left.is_auto() {
+                margin_left = Automatic::Given(0.0);
             }
-            if margin_right.is_none() {
-                margin_right = Some(0.0);
+            if margin_right.is_auto() {
+                margin_right = Automatic::Given(0.0);
             }
         }
 
@@ -162,49 +159,49 @@ impl<'a> LayoutBox<'a> {
         // and afterward all values should be absolute lengths in px.
         let underflow = containing_block.content.width - total;
 
-        match (width.is_none(), margin_left.is_none(), margin_right.is_none()) {
+        match (width.is_auto(), margin_left.is_auto(), margin_right.is_auto()) {
             // If the values are overconstrained, calculate margin_right.
             (false, false, false) => {
-                margin_right = Some(margin_right.unwrap_or_default() + underflow);
+                margin_right = Automatic::Given(margin_right.value() + underflow);
             }
 
             // If exactly one size is auto, its used value follows from the equality.
-            (false, false, true) => { margin_right = Some(underflow); }
-            (false, true, false) => { margin_left  = Some(underflow); }
+            (false, false, true) => { margin_right = Automatic::Given(underflow); }
+            (false, true, false) => { margin_left  = Automatic::Given(underflow); }
 
             // If width is set to auto, any other auto values become 0.
             (true, _, _) => {
-                if margin_left.is_none() { margin_left = Some(0.0); }
-                if margin_right.is_none() { margin_right = Some(0.0); }
+                if margin_left.is_auto() { margin_left = Automatic::Given(0.0); }
+                if margin_right.is_auto() { margin_right = Automatic::Given(0.0); }
 
                 if underflow >= 0.0 {
                     // Expand width to fill the underflow.
-                    width = Some(underflow);
+                    width = Automatic::Given(underflow);
                 } else {
                     // Width can't be negative. Adjust the right margin instead.
-                    width = Some(0.0);
-                    margin_right = Some(margin_right.unwrap_or_default() + underflow);
+                    width = Automatic::Given(0.0);
+                    margin_right = Automatic::Given(margin_right.value() + underflow);
                 }
             }
 
             // If margin-left and margin-right are both auto, their used values are equal.
             (false, true, true) => {
-                margin_left = Some(underflow / 2.0);
-                margin_right = Some(underflow / 2.0);
+                margin_left = Automatic::Given(underflow / 2.0);
+                margin_right = Automatic::Given(underflow / 2.0);
             }
         }
 
         let d = &mut self.dimensions;
-        d.content.width = width.unwrap_or_default();
+        d.content.width = width.value();
 
-        d.padding.left = padding_left;
-        d.padding.right = padding_right;
+        d.padding.left = self.style.padding.left;
+        d.padding.right = self.style.padding.right;
 
-        d.border.left = border_left;
-        d.border.right = border_right;
+        d.border.left = self.style.border.left;
+        d.border.right = self.style.border.right;
 
-        d.margin.left = margin_left.unwrap_or_default();
-        d.margin.right = margin_right.unwrap_or_default();
+        d.margin.left = margin_left.value();
+        d.margin.right = margin_right.value();
     }
 
     /// Finish calculating the block's edge sizes, and position it within its containing block.
@@ -213,18 +210,17 @@ impl<'a> LayoutBox<'a> {
     ///
     /// Sets the vertical margin/padding/border dimensions, and the `x`, `y` values.
     fn calculate_block_position(&mut self, containing_block: Dimensions) {
-        let style = self.get_style_node();
         let d = &mut self.dimensions;
 
         // If margin-top or margin-bottom is `auto`, the used value is zero.
-        d.margin.top = style.specified.margin_top.unwrap_or_default();
-        d.margin.bottom = style.specified.margin_bottom.unwrap_or_default();
+        d.margin.top = self.style.margin.top.value();
+        d.margin.bottom = self.style.margin.bottom.value();
 
-        d.border.top = style.specified.border_top;
-        d.border.bottom = style.specified.border_bottom;
+        d.border.top = self.style.border.top;
+        d.border.bottom = self.style.border.bottom;
 
-        d.padding.top = style.specified.padding_top;
-        d.padding.bottom = style.specified.padding_bottom;
+        d.padding.top = self.style.padding.top;
+        d.padding.bottom = self.style.padding.bottom;
 
         d.content.x = containing_block.content.x +
                       d.margin.left + d.border.left + d.padding.left;
@@ -250,7 +246,7 @@ impl<'a> LayoutBox<'a> {
     fn calculate_block_height(&mut self) {
         // If the height is set to an explicit length, use that exact length.
         // Otherwise, just keep the value set by `layout_block_children`.
-        if let Some(h) = self.get_style_node().specified.height {
+        if let Automatic::Given(h) = self.style.height {
             self.dimensions.content.height = h;
         }
     }
@@ -258,13 +254,12 @@ impl<'a> LayoutBox<'a> {
     /// Where a new inline child should go.
     fn get_inline_container(&mut self) -> &mut LayoutBox<'a> {
         match self.box_type {
-            InlineNode(_) | AnonymousBlock => self,
-            BlockNode(_) => {
+            BoxType::Inline => self,
+            BoxType::Block => {
                 // If we've just generated an anonymous block box, keep using it.
                 // Otherwise, create a new one.
-                match self.children.last() {
-                    Some(&LayoutBox { box_type: AnonymousBlock,..}) => {}
-                    _ => self.children.push(LayoutBox::new(AnonymousBlock))
+                if !self.children.last().map(LayoutBox::is_anonymous_block).unwrap_or_default() {
+                    self.children.push(LayoutBox::new(BoxType::Block, &self.style))
                 }
                 self.children.last_mut().unwrap()
             }
@@ -280,20 +275,12 @@ impl<'a> LayoutBox<'a> {
     }
 
     fn render_background(&self, list: &mut DisplayList) {
-        match self.box_type {
-            BlockNode(style) | InlineNode(style) => {
-                let color = style.specified.background_color;
-                list.push(DisplayCommand::SolidColor(color, self.dimensions.border_box()));
-            },
-            AnonymousBlock => {},
-        }
+        let color = self.style.background_color;
+        list.push(DisplayCommand::SolidColor(color, self.dimensions.border_box()));
     }
 
     fn render_borders(&self, list: &mut DisplayList) {
-        let color = match self.box_type {
-            BlockNode(style) | InlineNode(style) => style.specified.border_color,
-            AnonymousBlock => return,
-        };
+        let color = self.style.border_color;
 
         let d = &self.dimensions;
         let border_box = d.border_box();
@@ -333,7 +320,7 @@ impl<'a> LayoutBox<'a> {
 }
 
 impl Rect {
-    pub fn expanded_by(self, edge: EdgeSizes) -> Rect {
+    pub fn expanded_by(self, edge: Edge<f32>) -> Rect {
         Rect {
             x: self.x - edge.left,
             y: self.y - edge.top,
