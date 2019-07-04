@@ -10,6 +10,10 @@ use std::default::Default;
 enum BoxType {
     Block, // display: block
     Inline, // display: inline
+    //Absolute, // position: absolute && display: block
+    //Fixed, // position: fixed && display: block
+    //Float, // display: block && float: left|right
+    //Text, // literal text
 }
 
 /// A node in the layout tree.
@@ -49,33 +53,6 @@ impl<'a> LayoutBox<'a> {
         }
     }
 
-    fn of_style_node(style_node: &'a StyledNode<'a>) -> Self {
-        LayoutBox {
-            content: Rect::default(),
-            container: Rect::default(),
-            padding: Edge::default(),
-            border: Edge::default(),
-            margin: Edge::default(),
-            style: &style_node.specified,
-            anonymous: false,
-            box_type: match style_node.specified.display {
-                Display::Block => BoxType::Block,
-                Display::Inline => BoxType::Inline,
-                Display::None => panic!("of_style_node: root has display of \"none\"."),
-            },
-            children: Vec::new(),
-        }
-    }
-
-    fn is_anonymous_block(&self) -> bool {
-        self.box_type == BoxType::Block && self.anonymous
-    }
-
-    #[allow(dead_code)]
-    fn is_anonymous_inline(&self) -> bool {
-        self.box_type == BoxType::Inline && self.anonymous
-    }
-
     /// The area covered by the content area plus its padding.
     fn padding_box(&self) -> Rect {
         self.content.expanded_by(self.padding)
@@ -97,7 +74,7 @@ impl<'a> LayoutBox<'a> {
 pub fn layout_tree<'a>(node: &'a StyledNode<'a>, width: usize, height: usize) -> LayoutBox<'a> {
     // The layout algorithm expects the container height to start at 0.
     // TODO: Save the initial containing block height, for calculating percent heights.
-    let mut root_box = build_layout_tree(node);
+    let mut root_box = build_layout_tree(node).expect("Root style node has `display: none`");
     root_box.container.width = width as Pixels;
     //root_box.container.height = height as Pixels;
     root_box.layout();
@@ -105,19 +82,34 @@ pub fn layout_tree<'a>(node: &'a StyledNode<'a>, width: usize, height: usize) ->
 }
 
 /// Build the tree of LayoutBoxes, but don't perform any layout calculations yet.
-fn build_layout_tree<'a>(style_node: &'a StyledNode<'a>) -> LayoutBox<'a> {
+fn build_layout_tree<'a>(style_node: &'a StyledNode<'a>) -> Option<LayoutBox<'a>> {
     // Create the root box.
-    let mut root = LayoutBox::of_style_node(style_node);
+    let box_type = match style_node.specified.display {
+        Display::Block => Some(BoxType::Block),
+        Display::Inline => Some(BoxType::Inline),
+        Display::None => None,
+    }?;
+    let style = &style_node.specified;
+    let mut root = LayoutBox::new(box_type, style);
+    root.anonymous = false;
 
     // Create the descendant boxes.
-    for child in &style_node.children {
-        match child.specified.display {
-            Display::Block => root.children.push(build_layout_tree(child)),
-            Display::Inline => root.get_inline_container().children.push(build_layout_tree(child)),
-            Display::None => {}, // Skip any child with `display: none;`
+    let mut wrapper = None;
+    for child in style_node.children.iter().filter_map(build_layout_tree) {
+        // TODO: The child sequence is really supposed to be restricted to the supremum of all
+        // real child box types, taking Text < Inline < Block.
+        // The hacky check below effectively just follows the original toy layout algorithm.
+        if box_type != child.box_type {
+            let mut anon = wrapper.get_or_insert_with(|| LayoutBox::new(box_type, style));
+            anon.children.push(child);
+        } else {
+            if let Some(anon) = wrapper.take() {
+                root.children.push(anon);
+            }
+            root.children.push(child);
         }
     }
-    root
+    Some(root)
 }
 
 /// Fold the layout tree into a display list to render.
@@ -272,22 +264,9 @@ impl<'a> LayoutBox<'a> {
             self.content.height = h;
         }
     }
+}
 
-    /// Where a new inline child should go.
-    fn get_inline_container(&mut self) -> &mut LayoutBox<'a> {
-        match self.box_type {
-            BoxType::Inline => self,
-            BoxType::Block => {
-                // If we've just generated an anonymous block box, keep using it.
-                // Otherwise, create a new one.
-                if !self.children.last().map(LayoutBox::is_anonymous_block).unwrap_or_default() {
-                    self.children.push(LayoutBox::new(BoxType::Block, &self.style))
-                }
-                self.children.last_mut().unwrap()
-            }
-        }
-    }
-
+impl<'a> LayoutBox<'a> {
     fn render(&self, list: &mut DisplayList) {
         self.render_background(list);
         self.render_borders(list);
