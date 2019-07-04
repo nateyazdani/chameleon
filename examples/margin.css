@@ -19,14 +19,17 @@ div {
   border-color: #000000;
 }
 
-#float {
+.float {
   float: left;
   height: 100px;
   width: 100px;
-  background-color: #0000ff;
 }
 
 #upper {
+  background-color: #0000ff;
+}
+
+#middle {
   height: 85px;
   margin-bottom: 20px;
   background-color: #00ff00;
