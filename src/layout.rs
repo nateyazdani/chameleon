@@ -39,6 +39,8 @@ enum BoxType {
 pub struct LayoutBox<'a> {
     /// Position and size of the container box (from the containing block).
     container: Rect,
+    /// Position and size ignoring any adjustments due to style constraints.
+    intrinsic: Rect,
     /// Position and size of the content box relative to the document origin.
     content_box: Rect,
     /// Position and size of the padding box relative to the document origin.
@@ -47,8 +49,6 @@ pub struct LayoutBox<'a> {
     border_box: Rect,
     /// Position and size of the margin box relative to the document origin.
     margin_box: Rect,
-    /// Position and size ignoring any adjustments due to style constraints.
-    intrinsic: Rect,
     /// Edges of the padding box.
     padding: Edge<Pixels>,
     /// Edges of the border box.
@@ -71,11 +71,11 @@ impl<'a> LayoutBox<'a> {
     fn new(box_type: BoxType, style: &'a Style) -> Self {
         LayoutBox {
             container: Rect::default(),
+            intrinsic: Rect::default(),
             content_box: Rect::default(),
             padding_box: Rect::default(),
             border_box: Rect::default(),
             margin_box: Rect::default(),
-            intrinsic: Rect::default(),
             padding: Edge::default(),
             border: Edge::default(),
             margin: Edge::default(),
@@ -91,11 +91,9 @@ impl<'a> LayoutBox<'a> {
 /// Transform a style tree into a layout tree.
 #[allow(unused_variables)]
 pub fn layout_tree<'a>(node: &'a StyledNode<'a>, width: usize, height: usize) -> LayoutBox<'a> {
-    // The layout algorithm expects the container height to start at 0.
-    // TODO: Save the initial containing block height, for calculating percent heights.
     let mut root_box = build_layout_tree(node).expect("Root style node has `display: none`");
     root_box.container.width = width as Pixels;
-    //root_box.container.height = height as Pixels;
+    //root_box.container.height = height as Pixels; // this "height" is really box's top edge
     root_box.layout();
     root_box
 }
