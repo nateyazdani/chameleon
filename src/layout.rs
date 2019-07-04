@@ -149,7 +149,7 @@ impl<'a> LayoutBox<'a> {
     fn layout(&mut self) {
         match self.box_type {
             BoxType::Block => self.layout_block(),
-            BoxType::Inline => {} // TODO
+            BoxType::Inline => {},
         }
     }
 
@@ -182,7 +182,10 @@ impl<'a> LayoutBox<'a> {
         // Recursively lay out the children of this box.
         self.intrinsic.height = 0.0; // fold accumulator
         for child in &mut self.children {
-            child.container = self.intrinsic;
+            child.container.x = self.intrinsic.x;
+            child.container.y = self.intrinsic.y;
+            child.container.height = self.intrinsic.height;
+            child.container.width = self.content.width;
             child.layout();
             // Increment the height so each child is laid out below the previous one.
             self.intrinsic.height += child.margin_box().height;
