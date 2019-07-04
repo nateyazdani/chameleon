@@ -86,6 +86,14 @@ impl<V: Default + Copy> Automatic<V> {
     }
 }
 
+impl<V> Default for Automatic<V> {
+    fn default() -> Self { Automatic::Auto }
+}
+
+impl<V> From<V> for Automatic<V> {
+    fn from(v: V) -> Self { Automatic::Given(v) }
+}
+
 impl TryFrom<&Value> for Color {
     type Error = String;
 
