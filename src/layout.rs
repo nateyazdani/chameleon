@@ -37,12 +37,18 @@ enum BoxType {
 
 /// A node in the layout tree.
 pub struct LayoutBox<'a> {
-    /// Position and size of the content box relative to the document origin.
-    content: Rect,
-    /// Position and (mainly) size ignoring any adjustments due to style constraints.
-    intrinsic: Rect,
     /// Position and size of the container box (from the containing block).
     container: Rect,
+    /// Position and size of the content box relative to the document origin.
+    content_box: Rect,
+    /// Position and size of the padding box relative to the document origin.
+    padding_box: Rect,
+    /// Position and size of the border box relative to the document origin.
+    border_box: Rect,
+    /// Position and size of the margin box relative to the document origin.
+    margin_box: Rect,
+    /// Position and size ignoring any adjustments due to style constraints.
+    intrinsic: Rect,
     /// Edges of the padding box.
     padding: Edge<Pixels>,
     /// Edges of the border box.
@@ -64,9 +70,12 @@ pub struct LayoutBox<'a> {
 impl<'a> LayoutBox<'a> {
     fn new(box_type: BoxType, style: &'a Style) -> Self {
         LayoutBox {
-            content: Rect::default(),
-            intrinsic: Rect::default(),
             container: Rect::default(),
+            content_box: Rect::default(),
+            padding_box: Rect::default(),
+            border_box: Rect::default(),
+            margin_box: Rect::default(),
+            intrinsic: Rect::default(),
             padding: Edge::default(),
             border: Edge::default(),
             margin: Edge::default(),
@@ -76,21 +85,6 @@ impl<'a> LayoutBox<'a> {
             box_type: box_type,
             children: Vec::new(),
         }
-    }
-
-    /// The area covered by the content area plus its padding.
-    fn padding_box(&self) -> Rect {
-        self.content.expanded_by(self.padding)
-    }
-
-    /// The area covered by the content area plus padding and borders.
-    fn border_box(&self) -> Rect {
-        self.padding_box().expanded_by(self.border)
-    }
-
-    /// The area covered by the content area plus padding, borders, and margin.
-    fn margin_box(&self) -> Rect {
-        self.border_box().expanded_by(self.margin)
     }
 }
 
@@ -172,32 +166,38 @@ impl<'a> LayoutBox<'a> {
         // Position the box flush left (w.r.t. margin/border/padding) to the container.
         self.intrinsic.x = self.container.x +
                            self.margin.left + self.border.left + self.padding.left;
-        self.content.x = self.intrinsic.x;
+        self.content_box.x = self.intrinsic.x;
 
         // Position the box below all the previous boxes in the container.
         self.intrinsic.y = self.container.y + self.container.height +
                            self.margin.top + self.border.top + self.padding.top;
-        self.content.y = self.intrinsic.y;
+        self.content_box.y = self.intrinsic.y;
 
         // Recursively lay out the children of this box.
         self.intrinsic.height = 0.0; // fold accumulator
         for child in &mut self.children {
+            // Give the child box the boundaries of its container.
             child.container.x = self.intrinsic.x;
             child.container.y = self.intrinsic.y;
             child.container.height = self.intrinsic.height;
-            child.container.width = self.content.width;
+            child.container.width = self.content_box.width;
+            // Lay out the child box.
             child.layout();
             // Increment the height so each child is laid out below the previous one.
-            self.intrinsic.height += child.margin_box().height;
+            self.intrinsic.height += child.margin_box.height;
         }
 
         // Parent height can depend on child height, so `calculate_height` must be called after the
         // children are laid out.
-        self.content.height = if self.style.height.is_auto() {
+        self.content_box.height = if self.style.height.is_auto() {
             self.intrinsic.height
         } else {
             self.style.height.value()
         };
+
+        self.padding_box = self.content_box.expanded_by(self.padding);
+        self.border_box = self.padding_box.expanded_by(self.border);
+        self.margin_box = self.border_box.expanded_by(self.margin);
     }
 
     /// Calculate the width of a block-level non-replaced element in normal flow.
@@ -224,7 +224,7 @@ impl<'a> LayoutBox<'a> {
         self.border.left = self.style.border.left;
         self.border.right = self.style.border.right;
 
-        self.content.width = if self.style.width.is_auto() {
+        self.content_box.width = if self.style.width.is_auto() {
             self.underflow.max(0.0)
         } else {
             self.style.width.value()
@@ -270,52 +270,49 @@ impl<'a> LayoutBox<'a> {
     }
 
     fn render_background(&self, list: &mut DisplayList) {
-        let border_box = self.border_box();
         list.push(DisplayCommand::SolidColor {
             color: self.style.background_color,
-            x: border_box.x,
-            y: border_box.y,
-            width: border_box.width,
-            height: border_box.height,
+            x: self.border_box.x,
+            y: self.border_box.y,
+            width: self.border_box.width,
+            height: self.border_box.height,
         });
     }
 
     fn render_borders(&self, list: &mut DisplayList) {
-        let border_box = self.border_box();
-
         // Left border
         list.push(DisplayCommand::SolidColor {
             color: self.style.border_color,
-            x: border_box.x,
-            y: border_box.y,
+            x: self.border_box.x,
+            y: self.border_box.y,
             width: self.border.left,
-            height: border_box.height,
+            height: self.border_box.height,
         });
 
         // Right border
         list.push(DisplayCommand::SolidColor {
             color: self.style.border_color,
-            x: border_box.x + border_box.width - self.border.right,
-            y: border_box.y,
+            x: self.border_box.x + self.border_box.width - self.border.right,
+            y: self.border_box.y,
             width: self.border.right,
-            height: border_box.height,
+            height: self.border_box.height,
         });
 
         // Top border
         list.push(DisplayCommand::SolidColor{
             color: self.style.border_color,
-            x: border_box.x,
-            y: border_box.y,
-            width: border_box.width,
+            x: self.border_box.x,
+            y: self.border_box.y,
+            width: self.border_box.width,
             height: self.border.top,
         });
 
         // Bottom border
         list.push(DisplayCommand::SolidColor {
             color: self.style.border_color,
-            x: border_box.x,
-            y: border_box.y + border_box.height - self.border.bottom,
-            width: border_box.width,
+            x: self.border_box.x,
+            y: self.border_box.y + self.border_box.height - self.border.bottom,
+            width: self.border_box.width,
             height: self.border.bottom,
         });
     }
